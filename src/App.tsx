@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Mountain, Clock, Zap, ChevronRight, Info, Trash2, Map, MapPin, CheckCircle2, Calendar, Flag, Database, AlertTriangle, Search } from 'lucide-react';
-import CONNECTIONS from './data/connections.json';
+import CONNECTIONS from '@/src/data/connections.json';
 
 interface Node {
   name: string;
@@ -12,9 +12,14 @@ interface Park {
   entryPoints: string[];
 }
 
+interface PlanNode {
+  name: string;
+  actualTime?: string;
+}
+
 interface DayPlan {
   startTime: string;
-  nodes: string[]; // 僅儲存節點名稱，時間由系統動態計算以確保一致性
+  nodes: PlanNode[]; // 儲存節點名稱與實際抵達時間
 }
 
 const PARKS_DATA: Park[] = [
@@ -122,23 +127,44 @@ export default function App() {
         name: prevNodeName,
         standardTime: currentStandardTime,
         customTime: currentCustomTime,
+        actualTime: day.startTime, // 起點預設實際時間為起登時間
         duration: 0,
         customDuration: 0,
+        ratio: null as number | null,
         isStart: true
       }];
 
-      day.nodes.forEach((nodeName) => {
+      let prevActualTime = day.startTime;
+      let cumulativeStandardSinceLastActual = 0;
+
+      day.nodes.forEach((node) => {
+        const nodeName = node.name;
         const duration = getTimeBetween(prevNodeName, nodeName);
         const customMinutes = Math.round(duration * multiplier);
         currentStandardTime = addMinutesToTime(currentStandardTime, duration);
         currentCustomTime = addMinutesToTime(currentCustomTime, customMinutes);
 
+        cumulativeStandardSinceLastActual += duration;
+
+        let ratio: number | null = null;
+        if (node.actualTime && prevActualTime) {
+          const actualDuration = getMinutesBetween(prevActualTime, node.actualTime);
+          if (cumulativeStandardSinceLastActual > 0) {
+            ratio = actualDuration / cumulativeStandardSinceLastActual;
+          }
+          // 重置累計標準時間，並更新最後一個有實際時間的點
+          cumulativeStandardSinceLastActual = 0;
+          prevActualTime = node.actualTime;
+        }
+
         points.push({
           name: nodeName,
           standardTime: currentStandardTime,
           customTime: currentCustomTime,
+          actualTime: node.actualTime || "",
           duration: duration,
           customDuration: customMinutes,
+          ratio: ratio,
           isStart: false
         });
         prevNodeName = nodeName;
@@ -147,6 +173,14 @@ export default function App() {
       return points;
     });
   }, [dayPlans, confirmedDestinations, selectedEntryPoint, multiplier]);
+
+  function getMinutesBetween(time1: string, time2: string): number {
+    const [h1, m1] = time1.split(':').map(Number);
+    const [h2, m2] = time2.split(':').map(Number);
+    let diff = (h2 * 60 + m2) - (h1 * 60 + m1);
+    if (diff < 0) diff += 24 * 60; // 跨夜處理
+    return diff;
+  }
 
   const triggerHaptic = () => {
     if (window.navigator && window.navigator.vibrate) {
@@ -160,7 +194,7 @@ export default function App() {
 
     const currentNodes = dayPlans[activeDayIndex].nodes;
     const currentLocation = currentNodes.length > 0 
-      ? currentNodes[currentNodes.length - 1] 
+      ? currentNodes[currentNodes.length - 1].name 
       : currentDayStartNodeName;
 
     if (targetNodeName !== currentLocation) {
@@ -170,16 +204,26 @@ export default function App() {
         
         next[activeDayIndex] = {
           ...next[activeDayIndex],
-          nodes: [...dayNodes, targetNodeName]
+          nodes: [...dayNodes, { name: targetNodeName }]
         };
         return next;
       });
     }
   };
 
+  const handleActualTimeChange = (dayIdx: number, nodeIdx: number, time: string) => {
+    setDayPlans(prev => {
+      const next = [...prev];
+      const dayNodes = [...next[dayIdx].nodes];
+      dayNodes[nodeIdx] = { ...dayNodes[nodeIdx], actualTime: time };
+      next[dayIdx] = { ...next[dayIdx], nodes: dayNodes };
+      return next;
+    });
+  };
+
   const handleCompleteDay = () => {
       const currentNodes = dayPlans[activeDayIndex].nodes;
-      const currentDest = currentNodes[currentNodes.length - 1];
+      const currentDest = currentNodes[currentNodes.length - 1]?.name;
       if (!currentDest) return;
 
       // 驗證：如果是最後一天的最後一個行程，必須選擇登山口
@@ -438,7 +482,7 @@ export default function App() {
                   選擇下一個目的地 
                   <span className="text-xs font-normal text-stone-400 ml-2">
                     {currentDayStartNodeName 
-                      ? `(當前位置: ${dayPlans[activeDayIndex].nodes.length > 0 ? dayPlans[activeDayIndex].nodes[dayPlans[activeDayIndex].nodes.length - 1] : currentDayStartNodeName})` 
+                      ? `(當前位置: ${dayPlans[activeDayIndex].nodes.length > 0 ? dayPlans[activeDayIndex].nodes[dayPlans[activeDayIndex].nodes.length - 1].name : currentDayStartNodeName})` 
                       : '(等待前日行程確認)'}
                   </span>
                 </h3>
@@ -470,7 +514,7 @@ export default function App() {
                   {(() => {
                     const currentNodes = dayPlans[activeDayIndex].nodes;
                     const currentLocation = currentNodes.length > 0 
-                      ? currentNodes[currentNodes.length - 1] 
+                      ? currentNodes[currentNodes.length - 1].name 
                       : currentDayStartNodeName;
                     
                     // 獲取鄰近節點
@@ -512,7 +556,7 @@ export default function App() {
                 </div>
               )}
 
-              {activeDayIndex === dayPlans.length - 1 && dayPlans[activeDayIndex].nodes.length > 0 && !ALL_ENTRY_POINTS.includes(dayPlans[activeDayIndex].nodes[dayPlans[activeDayIndex].nodes.length - 1]) && (
+              {activeDayIndex === dayPlans.length - 1 && dayPlans[activeDayIndex].nodes.length > 0 && !ALL_ENTRY_POINTS.includes(dayPlans[activeDayIndex].nodes[dayPlans[activeDayIndex].nodes.length - 1].name) && (
                 <div className="flex items-center gap-2 p-3 bg-amber-50 text-amber-800 rounded-xl border border-amber-100">
                   <AlertTriangle size={14} className="shrink-0" />
                   <p className="text-[10px] font-medium">
@@ -563,7 +607,9 @@ export default function App() {
                       <tr className="bg-stone-50 text-stone-500 text-[10px] uppercase tracking-wider">
                         <th className="px-6 py-3 font-semibold">地點</th>
                         <th className="px-6 py-3 font-semibold text-center">上河 (1.0x)</th>
-                        <th className="px-6 py-3 font-semibold text-center text-emerald-700">你的時間 ({multiplier.toFixed(1)}x)</th>
+                        <th className="px-6 py-3 font-semibold text-center text-emerald-700">預計到達 ({multiplier.toFixed(1)}x)</th>
+                        <th className="px-6 py-3 font-semibold text-center text-blue-700">實際抵達</th>
+                        <th className="px-6 py-3 font-semibold text-center text-rose-700">速度比</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-stone-100">
@@ -571,7 +617,7 @@ export default function App() {
                         <React.Fragment key={idx}>
                           {idx > 0 && (
                             <tr className="bg-stone-50/30">
-                              <td colSpan={3} className="px-6 py-1">
+                              <td colSpan={5} className="px-6 py-1">
                                 <div className="flex items-center gap-4 text-[10px] text-stone-400 ml-1">
                                   <div className="w-px h-4 bg-stone-200 ml-0.5" />
                                   <span className="flex items-center gap-1 italic">
@@ -600,6 +646,27 @@ export default function App() {
                             </td>
                             <td className="px-6 py-4 text-center font-mono text-sm font-bold text-orange-600">
                               {item.customTime}
+                            </td>
+                            <td className="px-6 py-4 text-center">
+                              {item.isStart ? (
+                                <span className="text-sm font-mono font-bold text-stone-600">{item.actualTime}</span>
+                              ) : (
+                                <input 
+                                  type="time"
+                                  value={item.actualTime}
+                                  onChange={(e) => handleActualTimeChange(dayIdx, idx - 1, e.target.value)}
+                                  className="w-24 p-1 text-xs font-mono border border-stone-200 rounded outline-none focus:ring-1 focus:ring-blue-500"
+                                />
+                              )}
+                            </td>
+                            <td className="px-6 py-4 text-center">
+                              {item.ratio !== null ? (
+                                <span className={`text-xs font-bold ${item.ratio <= 1 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                  {item.ratio.toFixed(2)}
+                                </span>
+                              ) : (
+                                <span className="text-stone-300">-</span>
+                              )}
                             </td>
                           </tr>
                         </React.Fragment>
